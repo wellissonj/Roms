@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>retro-WJS — Launcher (GitHub + Drive)</title>
+<style>
+  :root{--bg:#06060a;--card:#0f1115;--muted:#bdbdbd;--accent:#ffcc00}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:Inter,system-ui,monospace;background:linear-gradient(180deg,#05050a,#0b0b12);color:#fff}
+  .wrap{max-width:1100px;margin:20px auto;padding:18px}
+  header{display:flex;gap:12px;align-items:center}
+  .logo{width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,#ffcc00,#ff7a4a);display:flex;align-items:center;justify-content:center;color:#111;font-weight:800}
+  h1{margin:0;font-size:20px}
+  .lead{color:var(--muted);margin-top:6px;font-size:13px}
+  .grid{display:grid;grid-template-columns:1fr 420px;gap:16px;margin-top:18px}
+  .panel{background:var(--card);padding:14px;border-radius:12px;min-height:220px}
+  .buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  button{padding:8px 12px;border-radius:8px;border:0;background:#222;color:#fff;cursor:pointer}
+  .play{background:linear-gradient(90deg,#ffcc00,#ff7a4a);color:#111;font-weight:700}
+  ul{margin:0;padding:0;list-style:none}
+  li{margin:8px 0;display:flex;gap:8px;align-items:center}
+  .romname{font-size:14px;color:#ddd}
+  #status{margin-top:12px;color:var(--muted);font-size:13px}
+  iframe{border:0;width:100%;height:480px;border-radius:8px;background:#000}
+  footer{margin-top:14px;color:#aaa;font-size:13px;text-align:center}
+  @media(max-width:900px){ .grid{grid-template-columns:1fr} iframe{height:360px} }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="logo">WJS</div>
+      <div>
+        <h1>retro-WJS — GitHub + Google Drive Launcher</h1>
+        <div class="lead">Coloque as ROMs em <code>roms/&lt;console&gt;/</code> no repositório e ROMs grandes no Google Drive.</div>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="panel" id="left">
+        <h3>Consoles</h3>
+        <div id="consoleButtons" class="buttons"></div>
+        <div id="status">Status: inicializando...</div>
+        <hr style="border:none;border-top:1px solid #0b0b0f;margin:12px 0">
+        <div id="romArea"><em>Escolha um console para listar as ROMs.</em></div>
+      </div>
+
+      <div class="panel">
+        <h3>Emulador / Player</h3>
+        <div id="player">
+          <div style="color:#bbb">Nenhum jogo carregado</div>
+        </div>
+        <div id="notes" style="color:#999;font-size:13px;margin-top:8px">
+          Observação: PS1/PSP grandes podem precisar de hospedagem dedicada. Use Git LFS para arquivos maiores que 100MB.
+        </div>
+      </div>
+    </div>
+
+    <footer>Para publicar: ative GitHub Pages (Settings → Pages) no repositório <strong>wellissonj/Roms</strong>.</footer>
+  </div>
+
+<script>
+/* CONFIGURE AQUI */
+const GITHUB_USER = "wellissonj";
+const REPO = "roms";
+const BRANCH = "main"; // branch onde estão os arquivos
+// consoles que usaremos (caso mude nomes de pastas, atualize aqui)
+const CONSOLES = ["snes","megadrive","gba","n64","ps1","psp"];
+// mapa opcional para roms que estão no Google Drive (grandes).
+// FORMATO: { "psp": [ { name: "Game.iso", driveId: "1AbC..." }, ... ] }
+// Se preencher aqui, aparecerão junto às ROMs do GitHub.
+const googleDriveMap = {
+  // exemplo:
+  // "psp": [ { name:"ExemploPSP.iso", driveId:"1AbCdeFGHIj..." } ]
+};
+
+/* fim config */
+
+const statusEl = document.getElementById('status');
+const consoleButtons = document.getElementById('consoleButtons');
+const romArea = document.getElementById('romArea');
+const player = document.getElementById('player');
+
+function logStatus(msg){
+  statusEl.innerText = 'Status: ' + msg;
+  console.log('[retro-WJS]', msg);
+}
+
+function githubRawBase(){
+  // Ex: https://raw.githubusercontent.com/user/repo/branch/
+  return `https://raw.githubusercontent.com/${encodeURIComponent(GITHUB_USER)}/${encodeURIComponent(REPO)}/${encodeURIComponent(BRANCH)}/`;
+}
+
+function romUrlFromGithub(system, filename){
+  // relative path in repo: roms/system/filename
+  // Use raw.githubusercontent URL to fetch directly
+  return githubRawBase() + 'roms/' + encodeURIComponent(system) + '/' + encodeURIComponent(filename);
+}
+
+// monta botões de consoles
+function initConsoleButtons(){
+  consoleButtons.innerHTML = '';
+  CONSOLES.forEach(c=>{
+    const b = document.createElement('button');
+    b.textContent = c.toUpperCase();
+    b.onclick = ()=> listRoms(c);
+    consoleButtons.appendChild(b);
+  });
+  logStatus('Pronto. Selecione um console.');
+}
+
+// busca manifest.json (se existir) — opcional
+async function fetchManifest(){
+  try{
+    const url = githubRawBase() + 'roms/manifest.json';
+    const r = await fetch(url);
+    if(!r.ok) return null;
+    const json = await r.json();
+    return json;
+  }catch(e){ return null; }
+}
+
+// lista roms de uma pasta no repo usando a API do GitHub (lista arquivos da pasta via conteúdo)
+async function listRoms(system){
+  try{
+    logStatus('Listando ROMs em ' + system + ' ...');
+    romArea.innerHTML = '<em>Carregando lista...</em>';
+    // Tentativa 1: buscar manifest.json e usar se existir
+    const manifest = await fetchManifest();
+    if(manifest && manifest[system] && manifest[system].length){
+      showRoms(system, manifest[system].slice());
+      return;
+    }
+    // Caso não exista manifest, usamos GitHub API Contents para listar arquivos da pasta roms/<system>
+    const apiUrl = `https://api.github.com/repos/${encodeURIComponent(GITHUB_USER)}/${encodeURIComponent(REPO)}/contents/roms/${encodeURIComponent(system)}?ref=${encodeURIComponent(BRANCH)}`;
+    const res = await fetch(apiUrl);
+    if(res.status === 404){
+      romArea.innerHTML = `<div style="color:#f88">Pasta roms/${system} não encontrada no repositório.</div>`;
+      logStatus('Pasta não encontrada: roms/' + system);
+      return;
+    }
+    if(!res.ok){
+      throw new Error('Erro ao acessar GitHub API: ' + res.status);
+    }
+    const data = await res.json();
+    // filtrar apenas arquivos
+    const files = data.filter(f=>f.type === 'file').map(f=>f.name);
+    const finalList = files.slice();
+    // adicionar itens do googleDriveMap se houver
+    if(googleDriveMap[system]){
+      googleDriveMap[system].forEach(item=>{
+        finalList.push(item.name + ' (Drive)');
+      });
+    }
+    showRoms(system, finalList);
+  }catch(err){
+    console.error(err);
+    romArea.innerHTML = `<div style="color:#f88">Erro ao listar ROMs. Ver console (F12).</div>`;
+    logStatus('Erro listagem: veja console');
+  }
+}
+
+function showRoms(system, list){
+  romArea.innerHTML = `<h4>${system.toUpperCase()} — ROMs</h4>`;
+  if(!list.length){ romArea.innerHTML += '<div style="color:#bbb">Nenhuma ROM encontrada.</div>'; return; }
+  const ul = document.createElement('ul');
+  list.forEach(name=>{
+    const li = document.createElement('li');
+    const play = document.createElement('button');
+    play.className = 'play';
+    play.textContent = '▶';
+    let isDrive = false;
+    // if name ends with (Drive) treat specially
+    if(typeof name === 'string' && name.endsWith(' (Drive)')){ isDrive=true; name = name.replace(' (Drive)',''); }
+    play.onclick = ()=> {
+      if(isDrive){
+        // find drive id
+        const map = (googleDriveMap[system]||[]).find(x=>x.name === name);
+        if(map && map.driveId){
+          const driveLink = `https://drive.google.com/uc?export=download&id=${map.driveId}`;
+          playRom(system, name, driveLink);
+        } else {
+          alert('Drive ID não encontrado para esta ROM. Verifique googleDriveMap no index.html');
+        }
+      } else {
+        // github raw path
+        const romUrl = romUrlFromGithub(system, name);
+        playRom(system, name, romUrl);
+      }
+    };
+    const span = document.createElement('span');
+    span.className = 'romname';
+    span.textContent = name;
+    li.appendChild(play);
+    li.appendChild(span);
+    ul.appendChild(li);
+  });
+  romArea.appendChild(ul);
+  logStatus('Lista pronta. Clique em ▶ para carregar.');
+}
+
+// função que carrega o rom no emulador (iframe embed ou fallback)
+function playRom(system, filename, url){
+  logStatus(`Carregando ${filename} (${system}) ...`);
+  // preferimos usar um embed de emulador conhecido (emulatorjs) se suportado; caso contrário mostramos link
+  const EMBED = {
+    snes: 'https://www.emulatorjs.com/embed?system=snes&rom=',
+    nes: 'https://www.emulatorjs.com/embed?system=nes&rom=',
+    megadrive: 'https://www.emulatorjs.com/embed?system=segaMD&rom=',
+    gba: 'https://www.emulatorjs.com/embed?system=gba&rom=',
+    n64: 'https://www.emulatorjs.com/embed?system=n64&rom=',
+    ps1: 'https://www.emulatorjs.com/embed?system=psx&rom=',
+    psp: 'https://www.emulatorjs.com/embed?system=psp&rom='
+  };
+  // if url is relative (starts with ./ or not http) we convert to absolute based on repo pages URL if available
+  let romUrl = url;
+  if(romUrl && !romUrl.match(/^https?:\/\//i)){
+    // build absolute using location (works when site is served from GitHub Pages)
+    const base = location.origin + location.pathname.replace(/\/[^/]*$/,'');
+    romUrl = base + romUrl.replace(/^\.\//,'');
+  }
+  // if embed base exists
+  if(EMBED[system]){
+    // Use iframe embed service — many emulator embed services accept url param containing ROM url (encoded)
+    const iframeUrl = EMBED[system] + encodeURIComponent(romUrl);
+    player.innerHTML = `<iframe src="${iframeUrl}" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms"></iframe>`;
+    logStatus('Emulador carregado em iframe. Se o jogo não iniciar, verifique o link da ROM ou CORS.');
+    return;
+  }
+  // fallback: se não houver embed, mostrar link e instruções para download
+  player.innerHTML = `<div style="color:#ddd">Não há embed disponível para ${system}.<br>
+  Abra este link em um emulador local: <a href="${romUrl}" target="_blank">${romUrl}</a></div>`;
+  logStatus('Fallback: link fornecido.');
+}
+
+// inicialização
+initConsoleButtons();
+
+</script>
+</body>
+</html>
